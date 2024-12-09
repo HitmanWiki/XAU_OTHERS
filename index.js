@@ -546,11 +546,14 @@ async function sendActiveSignalStatus() {
     }
 
     let message = "📊 **Active Signal Status** 📊\n\n";
+
     for (const symbol in activeSignals) {
         const signal = activeSignals[symbol];
 
-        // Fetch the latest price dynamically (mocked here; replace with real data fetching if needed)
+        // Fetch the latest price dynamically
         const latestPrice = await fetchLatestPrice(signal.crypto);
+        const decimalPlaces = getDecimalPlaces(signal.crypto);
+
         if (latestPrice !== null) {
             console.log(`Current price of ${signal.crypto}: $${latestPrice}`);
         } else {
@@ -561,10 +564,10 @@ async function sendActiveSignalStatus() {
 🔹 **Signal ID**: ${escapeMarkdown(signal.uniqueId || "N/A")}
 🔹 **Crypto**: ${escapeMarkdown(signal.crypto || "N/A")}
 🔹 **Signal Type**: ${escapeMarkdown(signal.signal || "N/A")}
-🔹 **Entry Price**: $${signal.entryPrice ? escapeMarkdown(signal.entryPrice.toFixed(2)) : "N/A"}
-🔹 **Current Price**: **$${latestPrice ? escapeMarkdown(latestPrice.toFixed(2)) : "N/A"}**
-🔹 **Trailing Stop**: $${signal.trailingStop ? escapeMarkdown(signal.trailingStop.toFixed(2)) : "N/A"}
-🔹 **Trailing Distance**: $${signal.trailingDistance ? escapeMarkdown(signal.trailingDistance.toFixed(2)) : "N/A"}
+🔹 **Entry Price**: $${signal.entryPrice ? escapeMarkdown(signal.entryPrice.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Current Price**: **$${latestPrice ? escapeMarkdown(latestPrice.toFixed(decimalPlaces)) : "N/A"}**
+🔹 **Trailing Stop**: $${signal.trailingStop ? escapeMarkdown(signal.trailingStop.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Trailing Distance**: $${signal.trailingDistance ? escapeMarkdown(signal.trailingDistance.toFixed(decimalPlaces)) : "N/A"}
 📈 **Outcome**: ${escapeMarkdown(signal.outcome || "Active")}
 🕒 **Generated At**: ${escapeMarkdown(signal.createdAt || "N/A")}
 
@@ -578,5 +581,11 @@ async function sendActiveSignalStatus() {
         console.error(`[${new Date().toISOString()}] Error sending active signal status:`, error.message);
     }
 }
+
+// Periodically send active signal status every 10 minutes
+setInterval(() => {
+    sendActiveSignalStatus();
+}, 10 * 60 * 1000);
+
 // Start the bot
 initializeBot();

@@ -74,14 +74,18 @@ function initializeDatabase() {
             lastTSLUpdate TEXT,
             customId TEXT UNIQUE
         )
-    `);
+    `, (err) => {
+        if (err) console.error("Error creating 'signals' table:", err.message);
+    });
 
     db.run(`
         CREATE TABLE IF NOT EXISTS state (
             key TEXT PRIMARY KEY,
             value TEXT
         )
-    `);
+    `, (err) => {
+        if (err) console.error("Error creating 'state' table:", err.message);
+    });
 }
 
 
@@ -348,7 +352,48 @@ function generateSignal(symbol, indicators, candles) {
         console.log(`[${symbol}] No signal generated.`);
     }
 }
+function saveBotState() {
+    // Save total ROI
+    db.run(
+        `INSERT INTO state (key, value) VALUES ('totalROI', ?) ON CONFLICT(key) DO UPDATE SET value = ?`,
+        [totalROI, totalROI],
+        (err) => {
+            if (err) console.error("Error saving total ROI:", err.message);
+            else console.log("Total ROI saved to DB.");
+        }
+    );
 
+    // Save active signals
+    for (const symbol in activeSignals) {
+        const signal = activeSignals[symbol];
+        db.run(
+            `INSERT INTO signals (uniqueId, crypto, signal, entryPrice, trailingStop, trailingDistance, outcome, createdAt, closedAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(uniqueId) DO UPDATE SET trailingStop = ?, trailingDistance = ?, outcome = ?, closedAt = ?`,
+            [
+                signal.uniqueId,
+                signal.crypto,
+                signal.signal,
+                signal.entryPrice,
+                signal.trailingStop,
+                signal.trailingDistance,
+                signal.outcome || "Active",
+                signal.createdAt,
+                signal.closedAt || null,
+                signal.trailingStop,
+                signal.trailingDistance,
+                signal.outcome || "Active",
+                signal.closedAt || null,
+            ],
+            (err) => {
+                if (err) console.error(`Error saving signal for ${signal.crypto}:`, err.message);
+            }
+        );
+    }
+}
+
+// Periodically save bot state
+setInterval(saveBotState, 60000); // Save every minute
 
 // ** Handle Trailing Stop **
 function handleTrailingStop(symbol, currentPrice, signal) {

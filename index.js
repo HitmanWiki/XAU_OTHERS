@@ -289,6 +289,11 @@ async function fetchLatestPrice(symbol) {
     }
 }
 
+function getDecimalPlaces(symbol) {
+    if (symbol === "EUR/USD") return 4; // EUR/USD needs 4 decimal places
+    if (symbol === "GBP/JPY") return 2; // GBP/JPY needs 2 decimal places
+    return 2; // Default to 2 decimal places for other pairs
+}
 
 
 
@@ -296,6 +301,8 @@ async function fetchLatestPrice(symbol) {
 function generateSignal(symbol, indicators, candles) {
     const { emaFast, emaSlow, rsi, macdLine, signalLine, atr, cprUpper, cprLower } = indicators;
     const close = candles[candles.length - 1].close;
+    const decimalPlaces = getDecimalPlaces(symbol);
+
 
     // Signal conditions based on EMA, RSI, and MACD
     const isBuySignal = close > cprUpper &&
@@ -321,13 +328,12 @@ function generateSignal(symbol, indicators, candles) {
         const trailingDistance = atr * 1.5;
 
         const signal = {
-            uniqueId: `${symbol}_${Date.now()}`,
+            uniqueId: `${symbol}_${Date.now()}`, // Add unique ID
             crypto: symbol,
             signal: signalType,
-            entryPrice: close,
-            trailingStop,
-            trailingDistance,
-            atr,
+            entryPrice: parseFloat(close.toFixed(decimalPlaces)),
+            trailingStop: parseFloat(trailingStop.toFixed(decimalPlaces)),
+            trailingDistance: parseFloat(trailingDistance.toFixed(decimalPlaces)),
             outcome: null,
             createdAt: new Date().toISOString(),
         };
@@ -350,6 +356,7 @@ function handleTrailingStop(symbol, currentPrice, signal) {
         console.error(`[${symbol}] Invalid or missing signal object.`, signal);
         return;
     }
+    const decimalPlaces = getDecimalPlaces(symbol); // Get decimal places
 
     const newTrailingStop =
         signal.signal === "BUY"
@@ -371,7 +378,18 @@ function handleTrailingStop(symbol, currentPrice, signal) {
 
 
         // Notify Telegram about the updated trailing stop
-        sendTelegramMessage(signal, "Trailing Stop Update");
+        sendTelegramMessage(
+            {
+                crypto: symbol,
+                signal: signal.signal,
+                entryPrice: signal.entryPrice.toFixed(decimalPlaces),
+                trailingStop: newTrailingStop.toFixed(decimalPlaces),
+                trailingDistance: signal.trailingDistance.toFixed(decimalPlaces),
+                outcome: "Active",
+                createdAt: signal.createdAt,
+            },
+            "Trailing Stop Updated"
+        );
         // Update the trailing stop in the database
         updateTrailingStopInDB(signal);
 
@@ -474,7 +492,7 @@ async function sendTelegramMessage(signal, messageType) {
         console.error("Invalid signal object. Cannot send message.", signal);
         return;
     }
-
+    const decimalPlaces = getDecimalPlaces(signal.crypto); // Get the decimal places based on the pair
     // Dynamically determine the heading based on the type of update
     let heading = "";
     switch (messageType) {
@@ -502,15 +520,14 @@ ${escapeMarkdown(heading)}
 🔹 **Signal ID**: ${escapeMarkdown(signal.uniqueId || "N/A")}
 🔹 **Crypto**: ${escapeMarkdown(signal.crypto || "N/A")}
 🔹 **Signal Type**: ${escapeMarkdown(signal.signal || "N/A")}
-🔹 **Entry Price**: $${signal.entryPrice ? escapeMarkdown(signal.entryPrice.toFixed(2)) : "N/A"}
-🔹 **Exit Price**: $${signal.exitPrice ? escapeMarkdown(signal.exitPrice.toFixed(2)) : "N/A"}
-🔹 **Current Price**: **$${signal.currentPrice ? escapeMarkdown(signal.currentPrice.toFixed(2)) : "N/A"}**
-🔹 **Trailing Stop**: $${signal.trailingStop ? escapeMarkdown(signal.trailingStop.toFixed(2)) : "N/A"}
-🔹 **Trailing Distance**: $${signal.trailingDistance ? escapeMarkdown(signal.trailingDistance.toFixed(2)) : "N/A"}
+🔹 **Entry Price**: $${signal.entryPrice ? escapeMarkdown(signal.entryPrice.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Exit Price**: $${signal.exitPrice ? escapeMarkdown(signal.exitPrice.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Trailing Stop**: $${signal.trailingStop ? escapeMarkdown(signal.trailingStop.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Trailing Distance**: $${signal.trailingDistance ? escapeMarkdown(signal.trailingDistance.toFixed(decimalPlaces)) : "N/A"}
 📈 **ROI**: ${signal.roi ? escapeMarkdown(signal.roi + "%") : "N/A"}
 📈 **Outcome**: ${escapeMarkdown(signal.outcome || "Active")}
 
-🕒 **Generated At**: ${escapeMarkdown(signal.createdAt || new Date().toISOString())}
+🕒 **Generated At**: ${escapeMarkdown(signal.createdAt || new Date().toLocaleString())}
 🕒 **Closed At**: ${escapeMarkdown(signal.closedAt || "N/A")}
     `;
 

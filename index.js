@@ -594,7 +594,6 @@ async function sendTelegramMessage(signal, messageType) {
     const message = `
 ${escapeMarkdown(heading)}
 
-${escapeMarkdown(heading)}
 
 🔹 **Signal ID**: ${escapeMarkdown(signal.uniqueId || "N/A")}
 🔹 **Crypto**: ${escapeMarkdown(signal.crypto || "N/A")}

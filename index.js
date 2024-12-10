@@ -48,7 +48,7 @@ function initializeBot() {
     initializeDatabase();
     loadBotState();
     console.log("Bot initialized successfully. Starting monitoring...");
-    setInterval(monitorSignals, 60000); // Monitor every minute
+    setInterval(monitorSignals, 300000); // Monitor every minute
 }
 
 // ** Database Setup **
@@ -73,6 +73,7 @@ function initializeDatabase() {
             createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
             lastTSLUpdate TEXT,
             customId TEXT UNIQUE
+            
         )
     `, (err) => {
         if (err) console.error("Error creating 'signals' table:", err.message);
@@ -94,36 +95,47 @@ function loadBotState() {
     db.all(`SELECT * FROM signals WHERE outcome IS NULL`, [], (err, rows) => {
         if (err) {
             console.error("Error loading active signals:", err.message);
-        } else {
-            rows.forEach((row) => {
+            return;
+        }
+
+        if (!rows || rows.length === 0) {
+            console.log("No active signals found in the database.");
+            return;
+        }
+
+        rows.forEach((row) => {
+            try {
                 activeSignals[row.crypto] = {
-                    uniqueId: row.customId,
+                    uniqueId: row.customId || `${row.crypto}_${Date.now()}`, // Use `customId` or fallback
                     crypto: row.crypto,
                     signal: row.signal,
                     entryPrice: parseFloat(row.entryPrice),
                     trailingStop: parseFloat(row.trailingStop),
                     trailingDistance: parseFloat(row.trailingDistance),
-                    outcome: row.outcome,
-                    lastTSLUpdate: row.lastTSLUpdate,
-                    createdAt: row.createdAt,
+                    outcome: row.outcome || "Active", // Default to "Active"
+                    lastTSLUpdate: row.lastTSLUpdate || new Date().toISOString(), // Fallback to current time
+                    createdAt: row.createdAt || new Date().toISOString(), // Fallback to current time
                 };
-            });
-            console.log("Active signals loaded:", activeSignals);
-        }
+            } catch (error) {
+                console.error(`Error processing signal row for ${row.crypto}:`, error.message);
+            }
+        });
+
+        console.log("Active signals loaded:", JSON.stringify(activeSignals, null, 2));
     });
 
-    // Ensure activeSignals is initialized even if no data is loaded
-    activeSignals = activeSignals || {};
-
+    // Load total ROI from the state table
     db.get(`SELECT value FROM state WHERE key = 'totalROI'`, [], (err, row) => {
         if (err) {
             console.error("Error loading total ROI:", err.message);
+            totalROI = 0; // Reset to 0 in case of error
         } else {
             totalROI = row ? parseFloat(row.value) : 0;
             console.log("Total ROI loaded:", totalROI);
         }
     });
 }
+
 // Calculate indicators
 function calculateIndicators(candles) {
     if (candles.length < 50) {
@@ -355,11 +367,15 @@ function generateSignal(symbol, indicators, candles) {
 function saveBotState() {
     // Save total ROI
     db.run(
-        `INSERT INTO state (key, value) VALUES ('totalROI', ?) ON CONFLICT(key) DO UPDATE SET value = ?`,
-        [totalROI, totalROI],
+        `INSERT INTO state (key, value) VALUES ('totalROI', ?) 
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        [totalROI],
         (err) => {
-            if (err) console.error("Error saving total ROI:", err.message);
-            else console.log("Total ROI saved to DB.");
+            if (err) {
+                console.error("Error saving total ROI:", err.message);
+            } else {
+                console.log("Total ROI saved to DB.");
+            }
         }
     );
 
@@ -367,9 +383,13 @@ function saveBotState() {
     for (const symbol in activeSignals) {
         const signal = activeSignals[symbol];
         db.run(
-            `INSERT INTO signals (uniqueId, crypto, signal, entryPrice, trailingStop, trailingDistance, outcome, createdAt, closedAt)
+            `INSERT INTO signals (customId, crypto, signal, entryPrice, trailingStop, trailingDistance, outcome, createdAt, closedAt)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(uniqueId) DO UPDATE SET trailingStop = ?, trailingDistance = ?, outcome = ?, closedAt = ?`,
+             ON CONFLICT(customId) DO UPDATE SET 
+                 trailingStop = excluded.trailingStop,
+                 trailingDistance = excluded.trailingDistance,
+                 outcome = excluded.outcome,
+                 closedAt = excluded.closedAt`,
             [
                 signal.uniqueId,
                 signal.crypto,
@@ -380,20 +400,21 @@ function saveBotState() {
                 signal.outcome || "Active",
                 signal.createdAt,
                 signal.closedAt || null,
-                signal.trailingStop,
-                signal.trailingDistance,
-                signal.outcome || "Active",
-                signal.closedAt || null,
             ],
             (err) => {
-                if (err) console.error(`Error saving signal for ${signal.crypto}:`, err.message);
+                if (err) {
+                    console.error(`Error saving signal for ${signal.crypto}:`, err.message);
+                } else {
+                    console.log(`Signal for ${signal.crypto} saved to DB.`);
+                }
             }
         );
     }
 }
 
 // Periodically save bot state
-setInterval(saveBotState, 60000); // Save every minute
+setInterval(saveBotState, 300000); // Save every minute
+
 
 // ** Handle Trailing Stop **
 function handleTrailingStop(symbol, currentPrice, signal) {
@@ -465,8 +486,8 @@ function closeSignal(symbol, signal, currentPrice, reason) {
     signal.exitPrice = currentPrice;
     signal.closedAt = new Date().toISOString();
     db.run(
-        `UPDATE signals SET outcome = ?, roi = ?, exitPrice = ?, closedAt = ? WHERE uniqueId = ?`,
-        [signal.outcome, roi, signal.exitPrice, signal.closedAt, signal.uniqueId],
+        `UPDATE signals SET outcome = ?, roi = ?, exitPrice = ?, closedAt = ? WHERE customId = ?`,
+        [signal.outcome, roi, signal.exitPrice, signal.closedAt, signal.customId],
         (err) => {
             if (err) console.error("Error updating signal in DB:", err.message);
         }
@@ -488,33 +509,44 @@ function closeSignal(symbol, signal, currentPrice, reason) {
 
 // ** Save Signal to DB **
 function saveSignalToDB(signal) {
-    if (!signal) {
-        console.error("Signal object is undefined or invalid.");
+    // Validate signal object
+    if (!signal || typeof signal !== "object") {
+        console.error("Signal object is undefined or invalid:", signal);
         return;
     }
-    db.run(
-        `INSERT INTO signals (crypto, signal, entryPrice, trailingStop, trailingDistance, outcome, createdAt, lastTSLUpdate, customId)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-            signal.crypto,
-            signal.signal,
-            signal.entryPrice,
-            signal.trailingStop,
-            signal.trailingDistance,
-            signal.outcome || null,
-            new Date().toISOString(), // `createdAt`
-            new Date().toISOString(), // `lastTSLUpdate`
-            signal.uniqueId || `#${signal.crypto}${Date.now()}`, // Generate a unique customId
-        ],
-        (err) => {
-            if (err) {
-                console.error("Error saving signal to DB:", err.message);
-            } else {
-                console.log(`Signal saved to DB for ${signal.crypto}.`);
-            }
+
+    // Generate `customId` if not provided
+    const customId = signal.customId || `${signal.crypto}_${Date.now()}`;
+
+    // Prepare the query and parameters
+    const query = `
+        INSERT INTO signals (
+            crypto, signal, entryPrice, trailingStop, trailingDistance,
+            outcome, createdAt, lastTSLUpdate, customId
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+        signal.crypto,
+        signal.signal,
+        signal.entryPrice,
+        signal.trailingStop,
+        signal.trailingDistance,
+        signal.outcome || null, // Default to null if not provided
+        signal.createdAt || new Date().toISOString(), // Use signal's createdAt or current timestamp
+        signal.lastTSLUpdate || new Date().toISOString(), // Use signal's lastTSLUpdate or current timestamp
+        customId, // Use provided or generated `customId`
+    ];
+
+    // Execute the query
+    db.run(query, params, (err) => {
+        if (err) {
+            console.error(`Error saving signal for ${signal.crypto}:`, err.message);
+        } else {
+            console.log(`Signal saved to DB for ${signal.crypto} with customId: ${customId}`);
         }
-    );
+    });
 }
+
 
 function updateTrailingStopInDB(signal) {
     db.run(
@@ -562,13 +594,15 @@ async function sendTelegramMessage(signal, messageType) {
     const message = `
 ${escapeMarkdown(heading)}
 
+${escapeMarkdown(heading)}
+
 🔹 **Signal ID**: ${escapeMarkdown(signal.uniqueId || "N/A")}
 🔹 **Crypto**: ${escapeMarkdown(signal.crypto || "N/A")}
 🔹 **Signal Type**: ${escapeMarkdown(signal.signal || "N/A")}
-🔹 **Entry Price**: $${signal.entryPrice ? escapeMarkdown(signal.entryPrice.toFixed(decimalPlaces)) : "N/A"}
-🔹 **Exit Price**: $${signal.exitPrice ? escapeMarkdown(signal.exitPrice.toFixed(decimalPlaces)) : "N/A"}
-🔹 **Trailing Stop**: $${signal.trailingStop ? escapeMarkdown(signal.trailingStop.toFixed(decimalPlaces)) : "N/A"}
-🔹 **Trailing Distance**: $${signal.trailingDistance ? escapeMarkdown(signal.trailingDistance.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Entry Price**: $${typeof signal.entryPrice === "number" ? escapeMarkdown(signal.entryPrice.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Exit Price**: $${typeof signal.exitPrice === "number" ? escapeMarkdown(signal.exitPrice.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Trailing Stop**: $${typeof signal.trailingStop === "number" ? escapeMarkdown(signal.trailingStop.toFixed(decimalPlaces)) : "N/A"}
+🔹 **Trailing Distance**: $${typeof signal.trailingDistance === "number" ? escapeMarkdown(signal.trailingDistance.toFixed(decimalPlaces)) : "N/A"}
 📈 **ROI**: ${signal.roi ? escapeMarkdown(signal.roi + "%") : "N/A"}
 📈 **Outcome**: ${escapeMarkdown(signal.outcome || "Active")}
 
